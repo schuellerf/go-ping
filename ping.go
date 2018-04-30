@@ -293,8 +293,6 @@ func (p *Pinger) run() {
 
 	for {
 		select {
-		case <-c:
-			close(p.done)
 		case <-p.done:
 			wg.Wait()
 			return
@@ -307,6 +305,9 @@ func (p *Pinger) run() {
 			if err != nil {
 				fmt.Println("FATAL: ", err.Error())
 			}
+		case <-p.ctx.Done():
+			wg.Wait()
+			return
 		case r := <-recv:
 			err := p.processPacket(r)
 			if err != nil {
@@ -314,10 +315,10 @@ func (p *Pinger) run() {
 			}
 		}
 		// Fix for high CPU usage.  Take-out of the default select this section
-+		if p.Count > 0 && p.PacketsRecv >= p.Count {
-+			close(p.done)
-+			wg.Wait()
-+			return
+		if p.Count > 0 && p.PacketsRecv >= p.Count {
+			close(p.done)
+			wg.Wait()
+			return
 		}
 	}
 }
