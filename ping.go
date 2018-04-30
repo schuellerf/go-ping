@@ -312,12 +312,12 @@ func (p *Pinger) run() {
 			if err != nil {
 				fmt.Println("FATAL: ", err.Error())
 			}
-		default:
-			if p.Count > 0 && p.PacketsRecv >= p.Count {
-				close(p.done)
-				wg.Wait()
-				return
-			}
+		}
+		// Fix for high CPU usage.  Take-out of the default select this section
++		if p.Count > 0 && p.PacketsRecv >= p.Count {
++			close(p.done)
++			wg.Wait()
++			return
 		}
 	}
 }
