@@ -3,37 +3,37 @@
 //
 // Here is a very simple example that sends & receives 3 packets:
 //
-//  pinger, err := ping.NewPinger("www.google.com")
-//  if err != nil {
-//    panic(err)
-//  }
+//	pinger, err := ping.NewPinger("www.google.com")
+//	if err != nil {
+//		panic(err)
+//	}
 //
-//  pinger.Count = 3
-//  pinger.Run() // blocks until finished
-//  stats := pinger.Statistics() // get send/receive/rtt stats
+//	pinger.Count = 3
+//	pinger.Run() // blocks until finished
+//	stats := pinger.Statistics() // get send/receive/rtt stats
 //
 // Here is an example that emulates the unix ping command:
 //
-//  pinger, err := ping.NewPinger("www.google.com")
-//  if err != nil {
-//    fmt.Printf("ERROR: %s\n", err.Error())
-//    return
-//  }
+//	pinger, err := ping.NewPinger("www.google.com")
+//	if err != nil {
+//		fmt.Printf("ERROR: %s\n", err.Error())
+//		return
+//	}
 //
-//  pinger.OnRecv = func(pkt *ping.Packet) {
-//    fmt.Printf("%d bytes from %s: icmp_seq=%d time=%v\n",
-//      pkt.Nbytes, pkt.IPAddr, pkt.Seq, pkt.Rtt)
-//  }
-//  pinger.OnFinish = func(stats *ping.Statistics) {
-//    fmt.Printf("\n--- %s ping statistics ---\n", stats.Addr)
-//    fmt.Printf("%d packets transmitted, %d packets received, %v%% packet loss\n",
-//      stats.PacketsSent, stats.PacketsRecv, stats.PacketLoss)
-//    fmt.Printf("round-trip min/avg/max/stddev = %v/%v/%v/%v\n",
-//      stats.MinRtt, stats.AvgRtt, stats.MaxRtt, stats.StdDevRtt)
-//  }
+//	pinger.OnRecv = func(pkt *ping.Packet) {
+//		fmt.Printf("%d bytes from %s: icmp_seq=%d time=%v\n",
+//			pkt.Nbytes, pkt.IPAddr, pkt.Seq, pkt.Rtt)
+//	}
+//	pinger.OnFinish = func(stats *ping.Statistics) {
+//		fmt.Printf("\n--- %s ping statistics ---\n", stats.Addr)
+//		fmt.Printf("%d packets transmitted, %d packets received, %v%% packet loss\n",
+//			stats.PacketsSent, stats.PacketsRecv, stats.PacketLoss)
+//		fmt.Printf("round-trip min/avg/max/stddev = %v/%v/%v/%v\n",
+//			stats.MinRtt, stats.AvgRtt, stats.MaxRtt, stats.StdDevRtt)
+//	}
 //
-//  fmt.Printf("PING %s (%s):\n", pinger.Addr(), pinger.IPAddr())
-//  pinger.Run()
+//	fmt.Printf("PING %s (%s):\n", pinger.Addr(), pinger.IPAddr())
+//	pinger.Run()
 //
 // It sends ICMP packet(s) and waits for a response. If it receives a response,
 // it calls the "receive" callback. When it's finished, it calls the "finish"
@@ -44,11 +44,12 @@
 package ping
 
 import (
-	"context"
 	"fmt"
 	"math"
 	"math/rand"
 	"net"
+	"os"
+	"os/signal"
 	"sync"
 	"syscall"
 	"time"
@@ -70,7 +71,7 @@ var (
 )
 
 // NewPinger returns a new Pinger struct pointer
-func NewPinger(ctx context.Context, addr string) (*Pinger, error) {
+func NewPinger(addr string) (*Pinger, error) {
 	ipaddr, err := net.ResolveIPAddr("ip", addr)
 	if err != nil {
 		return nil, err
@@ -90,12 +91,9 @@ func NewPinger(ctx context.Context, addr string) (*Pinger, error) {
 		Timeout:  time.Second * 100000,
 		Count:    -1,
 
-		id:      rand.Intn(0xffff),
 		network: "udp",
 		ipv4:    ipv4,
 		size:    timeSliceLength,
-
-		ctx: ctx,
 
 		done: make(chan bool),
 	}, nil
@@ -136,16 +134,12 @@ type Pinger struct {
 	// stop chan bool
 	done chan bool
 
-	ctx context.Context
-
 	ipaddr *net.IPAddr
-	rAddr  string
 	addr   string
 
 	ipv4     bool
 	source   string
 	size     int
-	id       int
 	sequence int
 	network  string
 }
@@ -153,7 +147,6 @@ type Pinger struct {
 type packet struct {
 	bytes  []byte
 	nbytes int
-	rAddr  string
 }
 
 // Packet represents a received and processed ICMP echo packet.
@@ -163,9 +156,6 @@ type Packet struct {
 
 	// IPAddr is the address of the host being pinged.
 	IPAddr *net.IPAddr
-
-	// RAddr is the address of the host responding.
-	RAddr string
 
 	// NBytes is the number of bytes in the message.
 	Nbytes int
@@ -188,9 +178,6 @@ type Statistics struct {
 
 	// IPAddr is the address of the host being pinged.
 	IPAddr *net.IPAddr
-
-	// rAddr is the address of the host responding.
-	RAddr string
 
 	// Addr is the string address of the host being pinged.
 	Addr string
@@ -288,7 +275,7 @@ func (p *Pinger) run() {
 	defer p.finish()
 
 	var wg sync.WaitGroup
-	recv := make(chan *packet, 10)
+	recv := make(chan *packet, 5)
 	wg.Add(1)
 	go p.recvICMP(conn, recv, &wg)
 
@@ -299,9 +286,14 @@ func (p *Pinger) run() {
 
 	timeout := time.NewTicker(p.Timeout)
 	interval := time.NewTicker(p.Interval)
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt)
+	signal.Notify(c, syscall.SIGTERM)
 
 	for {
 		select {
+		case <-c:
+			close(p.done)
 		case <-p.done:
 			wg.Wait()
 			return
@@ -314,26 +306,19 @@ func (p *Pinger) run() {
 			if err != nil {
 				fmt.Println("FATAL: ", err.Error())
 			}
-		case <-p.ctx.Done():
-			wg.Wait()
-			return
 		case r := <-recv:
 			err := p.processPacket(r)
 			if err != nil {
 				fmt.Println("FATAL: ", err.Error())
 			}
 		}
-		// Fix for high CPU usage.  Take-out of the default select this section
+                // moved outside of the select block to avoid CPU issue
 		if p.Count > 0 && p.PacketsRecv >= p.Count {
 			close(p.done)
 			wg.Wait()
 			return
 		}
 	}
-}
-
-func (p *Pinger) Stop() {
-	close(p.done)
 }
 
 func (p *Pinger) finish() {
@@ -385,7 +370,11 @@ func (p *Pinger) Statistics() *Statistics {
 	return &s
 }
 
-func (p *Pinger) recvICMP(conn *icmp.PacketConn, recv chan<- *packet, wg *sync.WaitGroup) {
+func (p *Pinger) recvICMP(
+	conn *icmp.PacketConn,
+	recv chan<- *packet,
+	wg *sync.WaitGroup,
+) {
 	defer wg.Done()
 	for {
 		select {
@@ -394,19 +383,20 @@ func (p *Pinger) recvICMP(conn *icmp.PacketConn, recv chan<- *packet, wg *sync.W
 		default:
 			bytes := make([]byte, 512)
 			conn.SetReadDeadline(time.Now().Add(time.Millisecond * 100))
-			n, rAddr, err := conn.ReadFrom(bytes)
+			n, _, err := conn.ReadFrom(bytes)
 			if err != nil {
 				if neterr, ok := err.(*net.OpError); ok {
 					if neterr.Timeout() {
 						// Read timeout
 						continue
+					} else {
+						close(p.done)
+						return
 					}
-					close(p.done)
-					return
 				}
 			}
 
-			recv <- &packet{bytes: bytes, nbytes: n, rAddr: rAddr.String()}
+			recv <- &packet{bytes: bytes, nbytes: n}
 		}
 	}
 }
@@ -437,16 +427,9 @@ func (p *Pinger) processPacket(recv *packet) error {
 		return nil
 	}
 
-	// Check if reply from same ID
-	body := m.Body.(*icmp.Echo)
-	if body.ID != p.id {
-		return nil
-	}
-
 	outPkt := &Packet{
 		Nbytes: recv.nbytes,
 		IPAddr: p.ipaddr,
-		RAddr:  recv.rAddr,
 	}
 
 	switch pkt := m.Body.(type) {
@@ -489,7 +472,7 @@ func (p *Pinger) sendICMP(conn *icmp.PacketConn) error {
 	bytes, err := (&icmp.Message{
 		Type: typ, Code: 0,
 		Body: &icmp.Echo{
-			ID:   p.id,
+			ID:   rand.Intn(65535),
 			Seq:  p.sequence,
 			Data: t,
 		},
