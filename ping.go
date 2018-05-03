@@ -276,6 +276,7 @@ func (p *Pinger) run() {
 
 	var wg sync.WaitGroup
 	recv := make(chan *packet, 5)
+	defer close(recv)
 	wg.Add(1)
 	go p.recvICMP(conn, recv, &wg)
 
@@ -285,11 +286,14 @@ func (p *Pinger) run() {
 	}
 
 	timeout := time.NewTicker(p.Timeout)
+	defer timeout.Stop()
 	interval := time.NewTicker(p.Interval)
+	defer interval.Stop()
 	c := make(chan os.Signal, 1)
+	defer close(c)
 	signal.Notify(c, os.Interrupt)
 	signal.Notify(c, syscall.SIGTERM)
-
+	
 	for {
 		select {
 		case <-c:
