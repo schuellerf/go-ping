@@ -291,7 +291,7 @@ func (p *Pinger) run() {
 	interval := time.NewTicker(p.Interval)
 	defer interval.Stop()
 	c := make(chan os.Signal, 1)
-	defer close(c)
+	defer signal.Stop(c)
 	signal.Notify(c, os.Interrupt)
 	signal.Notify(c, syscall.SIGTERM)
 
@@ -317,7 +317,7 @@ func (p *Pinger) run() {
 				fmt.Println("FATAL: ", err.Error())
 			}
 		}
-                // moved outside of the select block to avoid CPU issue
+		// moved outside of the select block to avoid CPU issue
 		if p.Count > 0 && p.PacketsRecv >= p.Count {
 			close(p.done)
 			wg.Wait()
