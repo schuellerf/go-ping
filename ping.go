@@ -435,7 +435,9 @@ func (p *Pinger) processPacket(recv *packet) error {
 	// Check if reply from same ID
 	body := m.Body.(*icmp.Echo)
 	if body.ID != p.id {
-		return nil
+		//fmt.Printf("ignoring %v != %v", body.ID, p.id)
+		//does not work for me
+		//return nil
 	}
 
 	outPkt := &Packet{
